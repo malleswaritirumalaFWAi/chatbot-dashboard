@@ -98,7 +98,8 @@ async function fetchAssignedConversations(
     `/api/v1/accounts/${accountId}/conversations?inbox_id=${inboxId}&assignee_type=assigned&status=all&created_after=${since}&page=${p}`;
 
   const page1 = await chatwootFetch(url(1));
-  const allCount: number = page1?.data?.meta?.all_count ?? 0;
+  // Use assigned_count (not all_count) — all_count returns inbox total regardless of filter
+  const allCount: number = page1?.data?.meta?.assigned_count ?? 0;
   const first: CWConversation[] = page1?.data?.payload ?? [];
   if (first.length === 0) return [];
 
