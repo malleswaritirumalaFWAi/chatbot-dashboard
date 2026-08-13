@@ -250,6 +250,40 @@ export function generateHTMLReport(
 
   ${weekTableHtml}
 
+  <!-- IMPACT BOXES -->
+  <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: #94a3b8; margin: 40px 0 16px;">What this means for the business</div>
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 40px;">
+    <div style="background: white; border-radius: 12px; padding: 24px; border: 1px solid #e5e9f0; border-left: 4px solid #1e3a5f; display: flex; flex-direction: column;">
+      <div style="font-size: 14px; font-weight: 700; margin-bottom: 10px; color: #1a2332;">Team focused on real problems</div>
+      <p style="font-size: 13px; color: #64748b; line-height: 1.7; flex: 1;">With AI handling ${at.botResolved.toLocaleString()} repetitive queries automatically, the team only gets involved for complex issues — payment problems, escalations, and cases requiring human judgment. No more answering the same questions repeatedly.</p>
+      <div style="font-size: 17px; font-weight: 800; color: #16a34a; margin-top: 16px;">${at.botResolved.toLocaleString()} queries handled without team</div>
+    </div>
+    <div style="background: white; border-radius: 12px; padding: 24px; border: 1px solid #e5e9f0; border-left: 4px solid #1e3a5f; display: flex; flex-direction: column;">
+      <div style="font-size: 14px; font-weight: 700; margin-bottom: 10px; color: #1a2332;">Customers get instant answers</div>
+      <p style="font-size: 13px; color: #64748b; line-height: 1.7; flex: 1;">AI replies in seconds — 24 hours a day, 7 days a week. Customers don't wait for a reply. This improves customer experience significantly, especially for queries outside business hours.</p>
+      <div style="font-size: 17px; font-weight: 800; color: #16a34a; margin-top: 16px;">Instant reply vs hours of wait</div>
+    </div>
+    <div style="background: white; border-radius: 12px; padding: 24px; border: 1px solid #e5e9f0; border-left: 4px solid #1e3a5f; display: flex; flex-direction: column;">
+      <div style="font-size: 14px; font-weight: 700; margin-bottom: 10px; color: #1a2332;">AI keeps getting smarter</div>
+      <p style="font-size: 13px; color: #64748b; line-height: 1.7; flex: 1;">The AI bot rate ${at.monthlyData.length >= 2 ? `went from ${at.botRateTrend.from}% in ${at.botRateTrend.fromMonth} to ${at.botRateTrend.to}% in ${at.botRateTrend.toMonth}` : `is currently at ${at.botResolvedPct}%`} — improving as the knowledge base grows. Each escalation that gets resolved becomes a learning opportunity.</p>
+      <div style="font-size: 17px; font-weight: 800; color: #16a34a; margin-top: 16px;">${at.monthlyData.length >= 2 ? `${at.botRateTrend.from}% &rarr; ${at.botRateTrend.to}% improvement` : `${at.botResolvedPct}% AI resolution rate`}</div>
+    </div>
+  </div>
+
+  <!-- HOURS SAVED BAND -->
+  <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: #94a3b8; margin: 0 0 16px;">Time saved for your team</div>
+  <div style="background: linear-gradient(135deg, #1e3a5f 0%, #164e3b 100%); border-radius: 14px; padding: 28px 36px; display: flex; align-items: center; gap: 36px; margin-bottom: 40px; flex-wrap: wrap;">
+    <div style="flex-shrink: 0;">
+      <div style="font-size: 56px; font-weight: 800; color: #fff; line-height: 1;">${at.hoursSaved}</div>
+      <div style="font-size: 18px; font-weight: 600; color: rgba(255,255,255,.7); margin-top: 4px;">hours saved</div>
+    </div>
+    <div style="color: rgba(255,255,255,.82); font-size: 13.5px; line-height: 1.8;">
+      <strong style="color: #fff;">${at.botResolved.toLocaleString()} conversations were handled completely by the AI</strong> &mdash; no human agent needed.<br />
+      At an average of ${at.avgHandlingTimeMinutes} minutes per conversation, that&apos;s <strong style="color: #fff;">${at.hoursSaved}+ hours</strong> of agent time saved.<br />
+      That&apos;s the equivalent of <strong style="color: #fff;">~${at.workingDaysSaved} working days</strong> of a support agent.
+    </div>
+  </div>
+
   <!-- FOOTER -->
   <div style="text-align: center; font-size: 11px; color: #94a3b8; padding: 24px 0 40px; border-top: 1px solid #e5e9f0; margin-top: 40px;">
     ${clientName} AI Performance Report &middot; desk.freedomwithai.com &middot; Prepared by FWAI &middot; ${now}
