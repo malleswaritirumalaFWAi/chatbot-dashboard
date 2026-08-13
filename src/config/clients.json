@@ -72,7 +72,8 @@
     "escalationLabels": ["diamond", "lead", "needs-human", "paid", "paid-intl"],
     "channels": [
       { "name": "WhatsApp", "icon": "💬", "inboxId": 7 },
-      { "name": "Email CRM", "icon": "✉️", "inboxId": 6 }
+      { "name": "Email CRM", "icon": "✉️", "inboxId": 6 },
+      { "name": "Email (Legacy)", "icon": "📧", "inboxId": 5 }
     ],
     "timezone": "Asia/Kolkata"
   }
