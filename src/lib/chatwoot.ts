@@ -45,10 +45,7 @@ export async function fetchHourlyConversationCounts(
   );
 }
 
-// ── V1 Conversations API (label-filtered) ──────────────────────────────────
-// Fetches only conversations that carry the escalation label.
-// Escalated conversations are always a small fraction of total, so pagination
-// is fast even for large accounts.
+// ── V1 Conversations API ────────────────────────────────────────────────────
 export interface CWConversation {
   id: number;
   status: "open" | "resolved" | "pending" | "snoozed";
@@ -56,7 +53,7 @@ export interface CWConversation {
   labels: string[];
 }
 
-const PAGE_BATCH = 3; // fetch this many pages in parallel per label
+const PAGE_BATCH = 3; // fetch this many pages in parallel
 
 async function fetchConversationsByLabel(
   accountId: number,
@@ -66,7 +63,6 @@ async function fetchConversationsByLabel(
   const url = (p: number) =>
     `/api/v1/accounts/${accountId}/conversations?inbox_id=${inboxId}&labels[]=${label}&status=all&page=${p}`;
 
-  // Page 1: get first batch + total count from metadata
   const page1 = await chatwootFetch(url(1));
   const allCount: number = page1?.data?.meta?.all_count ?? 0;
   const first: CWConversation[] = page1?.data?.payload ?? [];
@@ -75,8 +71,6 @@ async function fetchConversationsByLabel(
   const totalPages = Math.ceil(allCount / 25);
   if (totalPages <= 1) return first;
 
-  // Remaining pages fetched in small parallel batches to stay within Chatwoot limits.
-  // Individual page failures are tolerated — we skip those 25 convos rather than failing the whole label.
   const all: CWConversation[] = [...first];
   for (let start = 2; start <= totalPages; start += PAGE_BATCH) {
     const end = Math.min(start + PAGE_BATCH - 1, totalPages);
@@ -84,7 +78,7 @@ async function fetchConversationsByLabel(
       Array.from({ length: end - start + 1 }, (_, i) =>
         chatwootFetch(url(start + i))
           .then((d) => (d?.data?.payload ?? []) as CWConversation[])
-          .catch(() => [] as CWConversation[]) // skip failed pages rather than failing the whole label
+          .catch(() => [] as CWConversation[])
       )
     );
     for (const convs of batch) all.push(...convs);
@@ -93,9 +87,44 @@ async function fetchConversationsByLabel(
   return all;
 }
 
-// Fetches conversations matching ANY of the given escalation labels, deduplicated by ID.
-// Labels are fetched SEQUENTIALLY to avoid rate-limiting / timeouts on Chatwoot.
-// If a label doesn't exist (Chatwoot returns 500/404), it is silently skipped.
+// Fetches conversations assigned to a human agent (assignee_type=assigned).
+// These are conversations the bot could not resolve — a human agent took over.
+async function fetchAssignedConversations(
+  accountId: number,
+  inboxId: number
+): Promise<CWConversation[]> {
+  const since = 1735689600; // Jan 1, 2025
+  const url = (p: number) =>
+    `/api/v1/accounts/${accountId}/conversations?inbox_id=${inboxId}&assignee_type=assigned&status=all&created_after=${since}&page=${p}`;
+
+  const page1 = await chatwootFetch(url(1));
+  const allCount: number = page1?.data?.meta?.all_count ?? 0;
+  const first: CWConversation[] = page1?.data?.payload ?? [];
+  if (first.length === 0) return [];
+
+  const totalPages = Math.ceil(allCount / 25);
+  if (totalPages <= 1) return first;
+
+  const all: CWConversation[] = [...first];
+  for (let start = 2; start <= totalPages; start += PAGE_BATCH) {
+    const end = Math.min(start + PAGE_BATCH - 1, totalPages);
+    const batch = await Promise.all(
+      Array.from({ length: end - start + 1 }, (_, i) =>
+        chatwootFetch(url(start + i))
+          .then((d) => (d?.data?.payload ?? []) as CWConversation[])
+          .catch(() => [] as CWConversation[])
+      )
+    );
+    for (const convs of batch) all.push(...convs);
+  }
+
+  return all;
+}
+
+// Fetches ALL human-handled conversations: union of assignee-based + label-based detection.
+// - Assignee-based: conversation assigned to a human agent = bot escalated it (most reliable signal)
+// - Label-based: catches queued escalations not yet assigned (e.g. labeled bot-handoff but still waiting)
+// Labels are fetched SEQUENTIALLY to avoid Chatwoot rate limiting.
 export async function fetchEscalatedConversations(
   accountId: number,
   inboxId: number,
@@ -103,6 +132,15 @@ export async function fetchEscalatedConversations(
 ): Promise<CWConversation[]> {
   const seen = new Map<number, CWConversation>();
 
+  // 1. Assignee-based: all conversations handled by a human agent
+  try {
+    const assignedConvs = await fetchAssignedConversations(accountId, inboxId);
+    for (const conv of assignedConvs) seen.set(conv.id, conv);
+  } catch {
+    // fall back to label-only if assignee fetch fails
+  }
+
+  // 2. Label-based: catches escalations still in queue (labeled but not yet assigned)
   for (const label of escalationLabels) {
     try {
       const convs = await fetchConversationsByLabel(accountId, inboxId, label);
@@ -110,7 +148,7 @@ export async function fetchEscalatedConversations(
         if (!seen.has(conv.id)) seen.set(conv.id, conv);
       }
     } catch {
-      // Label doesn't exist in this account/inbox — skip it
+      // label doesn't exist in this inbox — skip
     }
   }
 

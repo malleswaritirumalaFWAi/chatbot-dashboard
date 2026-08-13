@@ -82,15 +82,12 @@ export async function GET(req: NextRequest) {
   }
 
   // Classify each conversation
+  // human = has escalation label OR assigned to a human agent (bot escalated it)
+  // ai    = no assignee AND no escalation label (bot resolved without human involvement)
   const conversations = allConvs.map((c) => {
     const hasEscalationLabel = c.labels.some((l) => escalationLabels.includes(l));
-    const classification: "ai" | "human" | "unknown" = hasEscalationLabel
-      ? "human"
-      : c.labels.length === 0 && !c.meta?.assignee
-      ? "ai"
-      : c.labels.length === 0 && c.meta?.assignee
-      ? "unknown" // has human assignee but no escalation label — needs review
-      : "ai";
+    const hasAssignee = !!c.meta?.assignee;
+    const classification: "ai" | "human" = hasEscalationLabel || hasAssignee ? "human" : "ai";
 
     return {
       id: c.id,
@@ -108,7 +105,6 @@ export async function GET(req: NextRequest) {
 
   const ai = conversations.filter((c) => c.classification === "ai").length;
   const human = conversations.filter((c) => c.classification === "human").length;
-  const unknown = conversations.filter((c) => c.classification === "unknown").length;
   const total = conversations.length;
 
   return NextResponse.json({
@@ -117,7 +113,6 @@ export async function GET(req: NextRequest) {
       total,
       ai,
       human,
-      unknown,
       aiRate: total > 0 ? Math.round((ai / total) * 1000) / 10 : 0,
       days,
       escalationLabels,

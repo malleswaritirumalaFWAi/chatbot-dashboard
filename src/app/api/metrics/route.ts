@@ -20,7 +20,7 @@ interface EscCacheEntry {
   fetchedAt: number;
 }
 const escCache = new Map<string, EscCacheEntry | "loading">();
-const ESC_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const ESC_TTL_MS = 30 * 60 * 1000; // 30 minutes (assignee fetch is heavier than label-only)
 
 function escKey(accountId: number, inboxId: number, labels: string[]): string {
   return `${accountId}:${inboxId}:${[...labels].sort().join(",")}`;

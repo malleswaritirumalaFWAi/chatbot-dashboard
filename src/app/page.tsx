@@ -341,7 +341,7 @@ export default function Dashboard() {
               padding: "10px 16px", marginBottom: "16px", fontSize: "12px", color: "#92400e",
             }}>
               This table fetches real conversations from Chatwoot and classifies them as AI-resolved vs human-handled.
-              Use it to verify the accuracy of the metrics above. Conversations marked <strong>Needs review</strong> have a human assignee but no escalation label — check these manually.
+              <strong>Human handled</strong> = assigned to a human agent OR has escalation label. <strong>AI resolved</strong> = bot handled end-to-end (no assignee, no escalation label).
             </div>
             <ConversationLog clientId={selectedClientId} />
           </>

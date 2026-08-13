@@ -9,14 +9,13 @@ interface Conv {
   labels: string[];
   assignee: string | null;
   inbox: string;
-  classification: "ai" | "human" | "unknown";
+  classification: "ai" | "human";
 }
 
 interface Summary {
   total: number;
   ai: number;
   human: number;
-  unknown: number;
   aiRate: number;
   days: number;
   escalationLabels: string[];
@@ -27,9 +26,8 @@ interface Props {
 }
 
 const CLASS_STYLE: Record<string, { bg: string; text: string; label: string }> = {
-  ai:      { bg: "#dcfce7", text: "#166534", label: "AI resolved" },
-  human:   { bg: "#fee2e2", text: "#991b1b", label: "Human handled" },
-  unknown: { bg: "#fef9c3", text: "#854d0e", label: "Needs review" },
+  ai:    { bg: "#dcfce7", text: "#166534", label: "AI resolved" },
+  human: { bg: "#fee2e2", text: "#991b1b", label: "Human handled" },
 };
 
 const STATUS_DOT: Record<string, string> = {
@@ -41,7 +39,7 @@ const STATUS_DOT: Record<string, string> = {
 
 export default function ConversationLog({ clientId }: Props) {
   const [days, setDays] = useState(30);
-  const [filter, setFilter] = useState<"all" | "ai" | "human" | "unknown">("all");
+  const [filter, setFilter] = useState<"all" | "ai" | "human">("all");
   const [data, setData] = useState<{ conversations: Conv[]; summary: Summary } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -97,12 +95,11 @@ export default function ConversationLog({ clientId }: Props) {
       {data && !loading && (
         <>
           {/* Summary cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px", marginBottom: "16px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
             {[
               { key: "all", label: "Total", count: s!.total, bg: "#f1f5f9", text: "#1e3a5f" },
               { key: "ai", label: "AI resolved", count: s!.ai, bg: "#dcfce7", text: "#166534" },
               { key: "human", label: "Human handled", count: s!.human, bg: "#fee2e2", text: "#991b1b" },
-              { key: "unknown", label: "Needs review", count: s!.unknown, bg: "#fef9c3", text: "#854d0e" },
             ].map(({ key, label, count, bg, text }) => (
               <button key={key} onClick={() => setFilter(key as typeof filter)} style={{
                 background: filter === key ? text : bg, color: filter === key ? "#fff" : text,
@@ -119,9 +116,8 @@ export default function ConversationLog({ clientId }: Props) {
           {/* Legend */}
           <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "10px" }}>
             <strong style={{ color: "#1e3a5f" }}>Classification logic:</strong>{" "}
-            <span style={{ background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: "4px" }}>AI</span> = no escalation label, no assignee.{" "}
-            <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: "4px" }}>Human</span> = has escalation label.{" "}
-            <span style={{ background: "#fef9c3", color: "#854d0e", padding: "1px 6px", borderRadius: "4px" }}>Needs review</span> = no label but has human assignee — verify these manually.
+            <span style={{ background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: "4px" }}>AI resolved</span> = no assignee &amp; no escalation label (bot handled end-to-end).{" "}
+            <span style={{ background: "#fee2e2", color: "#991b1b", padding: "1px 6px", borderRadius: "4px" }}>Human handled</span> = assigned to a human agent OR has escalation label (bot created a ticket).
           </div>
 
           {/* Table */}
