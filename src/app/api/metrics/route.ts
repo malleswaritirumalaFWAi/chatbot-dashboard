@@ -30,9 +30,14 @@ function escKey(accountId: number, inboxId: number, labels: string[]): string {
   return `${accountId}:${inboxId}:${[...labels].sort().join(",")}`;
 }
 
-function buildByDate(convs: CWConversation[]): Map<string, { human: number; humanResolved: number }> {
+// liveSince: only count conversations created on or after this timestamp.
+// Chatwoot V1 API sorts by last_activity_at and `created_after` doesn't filter the payload —
+// conversations created before the live window can appear in results if they had recent activity.
+// We must filter by created_at here to prevent old conversations from overriding the baseline.
+function buildByDate(convs: CWConversation[], liveSince: number): Map<string, { human: number; humanResolved: number }> {
   const byDate = new Map<string, { human: number; humanResolved: number }>();
   for (const conv of convs) {
+    if (conv.created_at < liveSince) continue; // skip conversations outside the live window
     const date = toDateStr(conv.created_at);
     if (!byDate.has(date)) byDate.set(date, { human: 0, humanResolved: 0 });
     const e = byDate.get(date)!;
@@ -61,7 +66,7 @@ function getEscalation(
   waitUntil((async () => {
     try {
       const convs = await fetchEscalatedConversations(accountId, inboxId, labels, liveSince);
-      escCache.set(key, { byDate: buildByDate(convs), fetchedAt: Date.now() });
+      escCache.set(key, { byDate: buildByDate(convs, liveSince), fetchedAt: Date.now() });
       console.log(`[cache] warmed ${key} (${convs.length} convos, last ${LIVE_WINDOW_DAYS}d)`);
     } catch {
       escCache.delete(key);

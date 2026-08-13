@@ -7,7 +7,6 @@ import type { DailyData } from "@/lib/types";
 import {
   filterByDateRange,
   computeAllTimeMetrics,
-  computeWeeklyMetrics,
   formatDisplayDate,
   addDays,
   startOfMonth,
@@ -141,14 +140,7 @@ export default function Dashboard() {
   const hasChannels = channelDailyData.length > 0;
 
   const handleDownload = () => {
-    const weeklyData = filteredData.slice(-7);
-    const wkBase = computeWeeklyMetrics(weeklyData, config.avgHandlingTimeMinutes);
-    const wk = {
-      ...wkBase,
-      startDate: weeklyData.length > 0 ? formatDisplayDate(weeklyData[0].date) : "",
-      endDate: weeklyData.length > 0 ? formatDisplayDate(weeklyData[weeklyData.length - 1].date) : "",
-    };
-    const html = generateHTMLReport(config.name, config.subtitle, at, wk, rangeLabel, `${wk.startDate} – ${wk.endDate}`);
+    const html = generateHTMLReport(config.name, config.subtitle, at, weekGroups, rangeLabel);
     downloadReport(html, config.name, rangeLabel);
   };
 
