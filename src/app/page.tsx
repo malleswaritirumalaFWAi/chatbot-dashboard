@@ -140,7 +140,18 @@ export default function Dashboard() {
   const hasChannels = channelDailyData.length > 0;
 
   const handleDownload = () => {
-    const html = generateHTMLReport(config.name, config.subtitle, at, weekGroups, rangeLabel);
+    const html = generateHTMLReport(
+      config.name,
+      config.subtitle,
+      at,
+      weekGroups,
+      rangeLabel,
+      channelDailyData,
+      heatmap,
+      effectiveRange.from,
+      effectiveRange.to,
+      config.avgHandlingTimeMinutes
+    );
     downloadReport(html, config.name, rangeLabel);
   };
 
