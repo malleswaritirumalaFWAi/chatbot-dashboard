@@ -69,7 +69,7 @@
     "accountId": 2,
     "inboxId": 7,
     "avgHandlingTimeMinutes": 5,
-    "escalationLabels": ["diamond", "lead", "needs-human", "paid", "paid-intl"],
+    "escalationLabels": ["bot-handoff", "needs-human"],
     "channels": [
       { "name": "WhatsApp", "icon": "💬", "inboxId": 7 },
       { "name": "Email CRM", "icon": "✉️", "inboxId": 6 },
