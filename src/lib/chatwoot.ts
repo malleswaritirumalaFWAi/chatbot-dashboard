@@ -16,7 +16,6 @@ async function chatwootFetch(path: string) {
 }
 
 // ── V2 Reports API ─────────────────────────────────────────────────────────
-// Returns daily { timestamp (seconds), value } pairs for the given inbox metric.
 export interface DailyReport {
   timestamp: number; // seconds
   value: number;
@@ -26,8 +25,8 @@ export async function fetchDailyConversationCounts(
   accountId: number,
   inboxId: number
 ): Promise<DailyReport[]> {
-  const since = 1735689600; // Jan 1, 2025 — all clients started in 2026; buffer for future clients
-  const until = Math.floor(Date.now() / 1000) + 86400; // tomorrow
+  const since = 1735689600; // Jan 1, 2025
+  const until = Math.floor(Date.now() / 1000) + 86400;
   return chatwootFetch(
     `/api/v2/accounts/${accountId}/reports?type=inbox&metric=conversations_count&group_by=day&id=${inboxId}&since=${since}&until=${until}`
   );
@@ -37,7 +36,6 @@ export async function fetchHourlyConversationCounts(
   accountId: number,
   inboxId: number
 ): Promise<DailyReport[]> {
-  // Last 90 days — enough for heatmap patterns (57k rows from 2020 would be too slow)
   const since = Math.floor(Date.now() / 1000) - 90 * 86400;
   const until = Math.floor(Date.now() / 1000) + 86400;
   return chatwootFetch(
@@ -49,19 +47,20 @@ export async function fetchHourlyConversationCounts(
 export interface CWConversation {
   id: number;
   status: "open" | "resolved" | "pending" | "snoozed";
-  created_at: number; // Unix timestamp in seconds
+  created_at: number;
   labels: string[];
 }
 
-const PAGE_BATCH = 3; // fetch this many pages in parallel
+const PAGE_BATCH = 4;
 
 async function fetchConversationsByLabel(
   accountId: number,
   inboxId: number,
-  label: string
+  label: string,
+  since: number
 ): Promise<CWConversation[]> {
   const url = (p: number) =>
-    `/api/v1/accounts/${accountId}/conversations?inbox_id=${inboxId}&labels[]=${label}&status=all&page=${p}`;
+    `/api/v1/accounts/${accountId}/conversations?inbox_id=${inboxId}&labels[]=${label}&status=all&created_after=${since}&page=${p}`;
 
   const page1 = await chatwootFetch(url(1));
   const allCount: number = page1?.data?.meta?.all_count ?? 0;
@@ -87,18 +86,16 @@ async function fetchConversationsByLabel(
   return all;
 }
 
-// Fetches conversations assigned to a human agent (assignee_type=assigned).
-// These are conversations the bot could not resolve — a human agent took over.
 async function fetchAssignedConversations(
   accountId: number,
-  inboxId: number
+  inboxId: number,
+  since: number
 ): Promise<CWConversation[]> {
-  const since = 1735689600; // Jan 1, 2025
   const url = (p: number) =>
     `/api/v1/accounts/${accountId}/conversations?inbox_id=${inboxId}&assignee_type=assigned&status=all&created_after=${since}&page=${p}`;
 
   const page1 = await chatwootFetch(url(1));
-  // Use assigned_count (not all_count) — all_count returns inbox total regardless of filter
+  // Use assigned_count for pagination — all_count returns inbox total regardless of filter
   const allCount: number = page1?.data?.meta?.assigned_count ?? 0;
   const first: CWConversation[] = page1?.data?.payload ?? [];
   if (first.length === 0) return [];
@@ -122,29 +119,29 @@ async function fetchAssignedConversations(
   return all;
 }
 
-// Fetches ALL human-handled conversations: union of assignee-based + label-based detection.
-// - Assignee-based: conversation assigned to a human agent = bot escalated it (most reliable signal)
-// - Label-based: catches queued escalations not yet assigned (e.g. labeled bot-handoff but still waiting)
+// Fetches human-handled conversations within the given time window (since = Unix timestamp).
+// Union of assignee-based + label-based detection.
 // Labels are fetched SEQUENTIALLY to avoid Chatwoot rate limiting.
 export async function fetchEscalatedConversations(
   accountId: number,
   inboxId: number,
-  escalationLabels: string[]
+  escalationLabels: string[],
+  since: number
 ): Promise<CWConversation[]> {
   const seen = new Map<number, CWConversation>();
 
-  // 1. Assignee-based: all conversations handled by a human agent
+  // 1. Assignee-based: conversations assigned to a human agent within the window
   try {
-    const assignedConvs = await fetchAssignedConversations(accountId, inboxId);
+    const assignedConvs = await fetchAssignedConversations(accountId, inboxId, since);
     for (const conv of assignedConvs) seen.set(conv.id, conv);
   } catch {
     // fall back to label-only if assignee fetch fails
   }
 
-  // 2. Label-based: catches escalations still in queue (labeled but not yet assigned)
+  // 2. Label-based: catches escalations in queue (labeled but not yet assigned)
   for (const label of escalationLabels) {
     try {
-      const convs = await fetchConversationsByLabel(accountId, inboxId, label);
+      const convs = await fetchConversationsByLabel(accountId, inboxId, label, since);
       for (const conv of convs) {
         if (!seen.has(conv.id)) seen.set(conv.id, conv);
       }

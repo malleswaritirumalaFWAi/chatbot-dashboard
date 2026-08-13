@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 
-// Extend Vercel function timeout to 300s (Pro) / max allowed on Hobby
 export const maxDuration = 300;
+
 import {
   fetchDailyConversationCounts,
   fetchEscalatedConversations,
@@ -11,16 +11,20 @@ import {
 } from "@/lib/chatwoot";
 import type { DailyData } from "@/lib/types";
 import clientsConfig from "@/config/clients.json";
+import baseline from "@/data/baseline.json";
 
-// ── Module-level escalation cache ─────────────────────────────────────────────
-// Persists across requests in the long-running Next.js dev/prod process.
-// key = "accountId:inboxId:label1,label2" → cached per-date escalation map
+// ── Live window: only fetch this many days from Chatwoot on each request ────
+// Historical data (older than LIVE_WINDOW_DAYS) comes from the static baseline.
+// This keeps page counts low enough for Vercel Hobby (~42 pages for EPH vs 133).
+const LIVE_WINDOW_DAYS = 30;
+
+// ── Module-level escalation cache (live window only) ─────────────────────────
 interface EscCacheEntry {
   byDate: Map<string, { human: number; humanResolved: number }>;
   fetchedAt: number;
 }
 const escCache = new Map<string, EscCacheEntry | "loading">();
-const ESC_TTL_MS = 30 * 60 * 1000; // 30 minutes (assignee fetch is heavier than label-only)
+const ESC_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function escKey(accountId: number, inboxId: number, labels: string[]): string {
   return `${accountId}:${inboxId}:${[...labels].sort().join(",")}`;
@@ -38,7 +42,6 @@ function buildByDate(convs: CWConversation[]): Map<string, { human: number; huma
   return byDate;
 }
 
-// Returns cached escalation map if available; otherwise kicks off a background fetch and returns empty map.
 function getEscalation(
   accountId: number,
   inboxId: number,
@@ -47,27 +50,25 @@ function getEscalation(
   const key = escKey(accountId, inboxId, labels);
   const cached = escCache.get(key);
 
-  // Fresh cache — use it
   if (cached && cached !== "loading" && Date.now() - cached.fetchedAt < ESC_TTL_MS) {
     return cached.byDate;
   }
-
-  // Already loading — don't start another fetch; return empty for now
   if (cached === "loading") return new Map();
 
-  // Stale or missing — kick off background fetch via waitUntil() so Vercel keeps the Lambda alive
+  // Kick off background fetch — only the live window (last LIVE_WINDOW_DAYS days)
+  const liveSince = Math.floor(Date.now() / 1000) - LIVE_WINDOW_DAYS * 86400;
   escCache.set(key, "loading");
   waitUntil((async () => {
     try {
-      const convs = await fetchEscalatedConversations(accountId, inboxId, labels);
+      const convs = await fetchEscalatedConversations(accountId, inboxId, labels, liveSince);
       escCache.set(key, { byDate: buildByDate(convs), fetchedAt: Date.now() });
-      console.log(`[cache] warmed ${key} (${convs.length} escalated convos)`);
+      console.log(`[cache] warmed ${key} (${convs.length} convos, last ${LIVE_WINDOW_DAYS}d)`);
     } catch {
-      escCache.delete(key); // allow retry next time
+      escCache.delete(key);
     }
   })());
 
-  return new Map(); // return empty for this request; next refresh will have data
+  return new Map();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -80,26 +81,37 @@ function dateLabel(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
-// Build DailyData[] for a single inbox — uses cached escalation so response is fast.
+// Build DailyData[] for one inbox.
+// liveByDate  = live-fetched escalations (last 30 days, from cache)
+// baselineMap = pre-computed historical escalations (from baseline.json, older than 30 days)
+// For each date: live takes priority; baseline fills older dates.
 function buildDailyData(
   dailyReports: { timestamp: number; value: number }[],
-  escalatedByDate: Map<string, { human: number; humanResolved: number }>
+  liveByDate: Map<string, { human: number; humanResolved: number }>,
+  baselineMap: Record<string, { human: number; humanResolved: number }>
 ): DailyData[] {
   const totalByDate = new Map<string, number>();
   for (const row of dailyReports) {
     if (row.value > 0) totalByDate.set(toDateStr(row.timestamp), row.value);
   }
 
+  // Only include dates that have V2 total data OR live escalation data.
+  // Baseline fills human counts for those dates but never adds baseline-only rows
+  // (which would show total=0 if V2 is temporarily unavailable).
   const allDates = new Set([
     ...Array.from(totalByDate.keys()),
-    ...Array.from(escalatedByDate.keys()),
+    ...Array.from(liveByDate.keys()),
   ]);
 
   return Array.from(allDates)
     .sort()
     .map((date) => {
       const total = totalByDate.get(date) ?? 0;
-      const { human = 0, humanResolved = 0 } = escalatedByDate.get(date) ?? {};
+      // Live data takes priority over baseline for the same date
+      const esc = liveByDate.has(date)
+        ? liveByDate.get(date)!
+        : (baselineMap[date] ?? { human: 0, humanResolved: 0 });
+      const { human, humanResolved } = esc;
       const bot = Math.max(0, total - human);
       const open = Math.max(0, human - humanResolved);
       return {
@@ -115,7 +127,6 @@ function buildDailyData(
     });
 }
 
-// Aggregate multiple DailyData[] arrays by summing per date
 function aggregateDailyData(arrays: DailyData[][]): DailyData[] {
   const byDate = new Map<string, { total: number; human: number; humanResolved: number }>();
   for (const arr of arrays) {
@@ -145,7 +156,6 @@ function aggregateDailyData(arrays: DailyData[][]): DailyData[] {
     });
 }
 
-// Build 7×24 heatmap matrix in IST (UTC+5:30). Rows: Mon=0…Sun=6.
 function buildHeatmap(hourlyReports: { timestamp: number; value: number }[]): number[][] {
   const IST_OFFSET = 5.5 * 3600;
   const matrix: number[][] = Array.from({ length: 7 }, () => new Array(24).fill(0));
@@ -176,7 +186,7 @@ export async function GET(req: NextRequest) {
         ? config.channels
         : [{ name: config.name, icon: "💬", inboxId: config.inboxId }];
 
-    // ── Fetch V2 daily + hourly data for all channels in parallel (fast) ────
+    // ── Fetch V2 daily + hourly for all channels in parallel ────────────────
     const [allDailyReports, allHourlyReports] = await Promise.all([
       Promise.all(
         channelDefs.map((ch) =>
@@ -190,23 +200,30 @@ export async function GET(req: NextRequest) {
       ),
     ]);
 
-    // ── Escalation data from cache (non-blocking) ────────────────────────────
-    const channelEscalation = channelDefs.map((ch) =>
+    // ── Live escalation from cache (last 30 days only) ──────────────────────
+    const channelLiveEsc = channelDefs.map((ch) =>
       getEscalation(config.accountId, ch.inboxId, config.escalationLabels)
     );
 
-    // ── Build per-channel DailyData[] ────────────────────────────────────────
-    const channelDailyArrays = channelDefs.map((_, i) =>
-      buildDailyData(allDailyReports[i], channelEscalation[i])
+    // ── Baseline historical data for each channel ───────────────────────────
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const baselineAccounts = (baseline as any).accounts ?? {};
+    const channelBaseline = channelDefs.map((ch) =>
+      (baselineAccounts[String(config.accountId)] ?? {})[String(ch.inboxId)] ?? {}
     );
 
-    // ── Aggregate all channels into main dailyData ────────────────────────────
+    // ── Build per-channel DailyData[] (live + baseline merged) ─────────────
+    const channelDailyArrays = channelDefs.map((_, i) =>
+      buildDailyData(allDailyReports[i], channelLiveEsc[i], channelBaseline[i])
+    );
+
+    // ── Aggregate all channels ──────────────────────────────────────────────
     const dailyData = aggregateDailyData(channelDailyArrays);
 
-    // ── Heatmap from all channels combined ────────────────────────────────────
+    // ── Heatmap ────────────────────────────────────────────────────────────
     const heatmap = buildHeatmap(allHourlyReports.flat());
 
-    // ── Per-channel data for breakdown panel ──────────────────────────────────
+    // ── Per-channel breakdown ──────────────────────────────────────────────
     const hasMultipleChannels = config.channels && config.channels.length > 0;
     const channelDailyData = hasMultipleChannels
       ? channelDefs.map((ch, i) => ({
@@ -217,7 +234,7 @@ export async function GET(req: NextRequest) {
         }))
       : [];
 
-    // ── Indicate whether escalation data is from cache or still loading ───────
+    // ── escalationReady: true once all live caches are populated ───────────
     const escalationReady = channelDefs.every((ch) => {
       const key = escKey(config.accountId, ch.inboxId, config.escalationLabels);
       const c = escCache.get(key);
@@ -231,7 +248,7 @@ export async function GET(req: NextRequest) {
       endDate: today,
       heatmap,
       channelDailyData,
-      escalationReady, // frontend can show a banner if false
+      escalationReady,
     });
   } catch (err) {
     console.error("Chatwoot fetch error:", err);
