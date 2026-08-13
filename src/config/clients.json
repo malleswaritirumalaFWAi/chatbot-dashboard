@@ -6,7 +6,7 @@
     "accountId": 1,
     "inboxId": 3,
     "avgHandlingTimeMinutes": 5,
-    "escalationLabels": ["bot-handoff"],
+    "escalationLabels": ["bot-handoff", "needs-human"],
     "channels": [
       { "name": "Emails CRM", "icon": "✉️", "inboxId": 3 },
       { "name": "WhatsApp CRM", "icon": "💬", "inboxId": 4 }

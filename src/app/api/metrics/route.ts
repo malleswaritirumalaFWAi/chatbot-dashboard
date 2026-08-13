@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
+
+// Extend Vercel function timeout to 300s (Pro) / max allowed on Hobby
+export const maxDuration = 300;
 import {
   fetchDailyConversationCounts,
   fetchEscalatedConversations,
@@ -51,16 +55,17 @@ function getEscalation(
   // Already loading — don't start another fetch; return empty for now
   if (cached === "loading") return new Map();
 
-  // Stale or missing — kick off background fetch (do NOT await)
+  // Stale or missing — kick off background fetch via waitUntil() so Vercel keeps the Lambda alive
   escCache.set(key, "loading");
-  fetchEscalatedConversations(accountId, inboxId, labels)
-    .then((convs) => {
+  waitUntil((async () => {
+    try {
+      const convs = await fetchEscalatedConversations(accountId, inboxId, labels);
       escCache.set(key, { byDate: buildByDate(convs), fetchedAt: Date.now() });
       console.log(`[cache] warmed ${key} (${convs.length} escalated convos)`);
-    })
-    .catch(() => {
+    } catch {
       escCache.delete(key); // allow retry next time
-    });
+    }
+  })());
 
   return new Map(); // return empty for this request; next refresh will have data
 }

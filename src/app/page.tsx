@@ -24,6 +24,7 @@ import WeeklyPerfTable from "@/components/WeeklyPerfTable";
 import HoursSavedBand from "@/components/HoursSavedBand";
 import AiVsTeam from "@/components/AiVsTeam";
 import ChannelBreakdown from "@/components/ChannelBreakdown";
+import ConversationLog from "@/components/ConversationLog";
 
 const WeeklyCharts = dynamic(() => import("@/components/WeeklyCharts"), { ssr: false });
 const ActivityHeatmap = dynamic(() => import("@/components/ActivityHeatmap"), { ssr: false });
@@ -332,6 +333,17 @@ export default function Dashboard() {
                 <ActivityHeatmap heatmap={heatmap} />
               </>
             )}
+
+            {/* Conversation Validation Log */}
+            <SectionLabel>Validate: real conversations from Chatwoot</SectionLabel>
+            <div style={{
+              background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "10px",
+              padding: "10px 16px", marginBottom: "16px", fontSize: "12px", color: "#92400e",
+            }}>
+              This table fetches real conversations from Chatwoot and classifies them as AI-resolved vs human-handled.
+              Use it to verify the accuracy of the metrics above. Conversations marked <strong>Needs review</strong> have a human assignee but no escalation label — check these manually.
+            </div>
+            <ConversationLog clientId={selectedClientId} />
           </>
         )}
       {/* Footer */}
