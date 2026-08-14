@@ -397,8 +397,8 @@ export async function GET(req: NextRequest) {
     const presets = {
       "all-time":   { from: dataStart,                   to: todayIST },
       "this-month": { from: startOfMonthStr(todayIST),   to: todayIST },
-      "last-30":    { from: addDaysStr(todayIST, -29),   to: todayIST },
-      "last-7":     { from: addDaysStr(todayIST, -6),    to: todayIST },
+      "last-30":    { from: addDaysStr(todayIST, -30),   to: todayIST },
+      "last-7":     { from: addDaysStr(todayIST, -7),    to: todayIST },
     };
     const summaryTotals = computeSummaryTotals(dailyData, presets);
 
