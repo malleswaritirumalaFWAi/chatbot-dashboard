@@ -152,3 +152,23 @@ export async function fetchEscalatedConversations(
 
   return Array.from(seen.values());
 }
+
+// ── V2 Summary API ──────────────────────────────────────────────────────────
+// This is the same endpoint Chatwoot's own reports UI calls — guarantees exact match.
+export interface InboxSummary {
+  conversations_count: number;
+  resolutions_count: number;
+  incoming_messages_count: number;
+  outgoing_messages_count: number;
+}
+
+export async function fetchInboxSummary(
+  accountId: number,
+  inboxId: number,
+  since: number,
+  until: number
+): Promise<InboxSummary> {
+  return chatwootFetch(
+    `/api/v2/accounts/${accountId}/reports/summary?since=${since}&until=${until}&type=inbox&id=${inboxId}`
+  );
+}

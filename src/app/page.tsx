@@ -58,6 +58,7 @@ export default function Dashboard() {
   const [heatmap, setHeatmap] = useState<number[][]>([]);
   const [channelDailyData, setChannelDailyData] = useState<ChannelDailyData[]>([]);
   const [escalationReady, setEscalationReady] = useState(true);
+  const [summaryTotals, setSummaryTotals] = useState<Record<string, number>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -79,6 +80,7 @@ export default function Dashboard() {
           setHeatmap(data.heatmap ?? []);
           setChannelDailyData(data.channelDailyData ?? []);
           setEscalationReady(data.escalationReady ?? true);
+          setSummaryTotals(data.summaryTotals ?? {});
         })
         .catch((e: Error) => { if (!cancelled) setError(e.message); })
         .finally(() => { if (!cancelled) setIsLoading(false); });
@@ -121,11 +123,49 @@ export default function Dashboard() {
     () => computeAllTimeMetrics(filteredData, config.avgHandlingTimeMinutes),
     [filteredData, config.avgHandlingTimeMinutes]
   );
-  const at = useMemo(() => ({
-    ...atBase,
-    startDate: filteredData.length > 0 ? formatDisplayDate(filteredData[0].date) : "",
-    endDate: filteredData.length > 0 ? formatDisplayDate(filteredData[filteredData.length - 1].date) : "",
-  }), [atBase, filteredData]);
+
+  // Use the Chatwoot summary API total (IST boundaries) for the 4 standard presets.
+  // This guarantees our total matches what Chatwoot's own reports pages show.
+  // For custom ranges, fall back to the filtered daily sum (close enough).
+  const at = useMemo(() => {
+    const startDate = filteredData.length > 0 ? formatDisplayDate(filteredData[0].date) : "";
+    const endDate   = filteredData.length > 0 ? formatDisplayDate(filteredData[filteredData.length - 1].date) : "";
+
+    const accurateTotal =
+      datePreset !== "custom" && summaryTotals[datePreset] != null
+        ? summaryTotals[datePreset]
+        : atBase.total;
+
+    if (accurateTotal === atBase.total) {
+      return { ...atBase, startDate, endDate };
+    }
+
+    // Recompute derived values with the accurate total
+    const total        = accurateTotal;
+    const human        = atBase.escalated;
+    const bot          = Math.max(0, total - human);
+    const humanResolved = atBase.humanResolved;
+    const open         = atBase.open;
+    const minutesSaved = bot * config.avgHandlingTimeMinutes;
+    const hoursSaved   = Math.round(minutesSaved / 60);
+    const workingDaysSaved = Math.round((hoursSaved / 8) * 10) / 10;
+
+    return {
+      ...atBase,
+      total,
+      botResolved:             bot,
+      botHandled:              bot,
+      botResolvedPct:          total > 0 ? Math.round((bot          / total) * 1000) / 10 : 0,
+      escalatedPct:            total > 0 ? Math.round((human        / total) * 1000) / 10 : 0,
+      humanResolvedOfTotalPct: total > 0 ? Math.round((humanResolved / total) * 1000) / 10 : 0,
+      openPct:                 total > 0 ? Math.round((open          / total) * 1000) / 10 : 0,
+      hoursSaved,
+      minutesSaved,
+      workingDaysSaved,
+      startDate,
+      endDate,
+    };
+  }, [atBase, datePreset, summaryTotals, config.avgHandlingTimeMinutes, filteredData]);
 
   const weekGroups = useMemo(() => groupByWeek(filteredData), [filteredData]);
 
