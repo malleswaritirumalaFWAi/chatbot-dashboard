@@ -179,7 +179,11 @@ async function fetchSummaryTotals(
   testByDatePerInbox: Record<string, { total: number; escalated: number }>[]
 ): Promise<Record<string, number>> {
   const summaryTotals: Record<string, number> = {};
+  let first = true;
   for (const [preset, { from, to }] of Object.entries(presets)) {
+    // Small delay between presets to avoid Chatwoot rate limiting
+    if (!first) await new Promise((r) => setTimeout(r, 400));
+    first = false;
     const since = istMidnightUnix(from);
     const until = istEndOfDayUnix(to);
     const counts = await Promise.all(
