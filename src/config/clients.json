@@ -22,7 +22,9 @@
     "escalationLabels": ["bot-handoff"],
     "channels": [
       { "name": "EQH Email", "icon": "✉️", "inboxId": 12 },
-      { "name": "Web Widget", "icon": "🌐", "inboxId": 14 }
+      { "name": "EQH WhatsApp", "icon": "💬", "inboxId": 13 },
+      { "name": "Web Widget", "icon": "🌐", "inboxId": 14 },
+      { "name": "Email", "icon": "📧", "inboxId": 10 }
     ]
   },
   {
@@ -73,7 +75,8 @@
     "channels": [
       { "name": "WhatsApp", "icon": "💬", "inboxId": 7 },
       { "name": "Email CRM", "icon": "✉️", "inboxId": 6 },
-      { "name": "Email (Legacy)", "icon": "📧", "inboxId": 5 }
+      { "name": "Email (Legacy)", "icon": "📧", "inboxId": 5 },
+      { "name": "CSAT", "icon": "⭐", "inboxId": 25 }
     ],
     "timezone": "Asia/Kolkata"
   }
