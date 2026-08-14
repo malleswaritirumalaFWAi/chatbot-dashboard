@@ -97,7 +97,9 @@ export default function Dashboard() {
     setCustomTo("");
   };
 
-  const today = new Date().toISOString().split("T")[0];
+  // Use IST date (UTC+5:30) to match the backend's getTodayIST() — ensures
+  // preset date ranges align between frontend filter and backend summaryTotals.
+  const today = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().split("T")[0];
 
   const effectiveRange = useMemo(() => {
     const start = dataStartDate || today;

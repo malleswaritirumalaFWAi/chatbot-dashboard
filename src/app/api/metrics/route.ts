@@ -19,6 +19,44 @@ import testExclusions from "@/data/test-exclusions.json";
 // This keeps page counts low enough for Vercel Hobby (~42 pages for EPH vs 133).
 const LIVE_WINDOW_DAYS = 30;
 
+// ── Module-level daily report cache ──────────────────────────────────────────
+// Stores the last successful V2 daily report response per inbox.
+// If Chatwoot rate-limits a fresh fetch (returns []), we serve stale cache
+// rather than producing total=0 rows that corrupt bot-rate calculations.
+interface DailyCacheEntry {
+  reports: { timestamp: number; value: number }[];
+  fetchedAt: number;
+}
+const dailyCache = new Map<string, DailyCacheEntry>();
+
+function dailyKey(accountId: number, inboxId: number): string {
+  return `${accountId}:${inboxId}`;
+}
+
+async function fetchDailyWithCache(
+  accountId: number,
+  inboxId: number
+): Promise<{ timestamp: number; value: number }[]> {
+  const key = dailyKey(accountId, inboxId);
+  try {
+    const fresh = await fetchDailyConversationCounts(accountId, inboxId);
+    // Only cache non-empty responses — an empty response likely means rate-limiting
+    if (fresh.length > 0) {
+      dailyCache.set(key, { reports: fresh, fetchedAt: Date.now() });
+      return fresh;
+    }
+    // fresh is empty: fall through to cache
+  } catch {
+    // fetch threw: fall through to cache
+  }
+  const cached = dailyCache.get(key);
+  if (cached) {
+    console.warn(`[daily-cache] serving stale data for ${key} (fresh fetch returned empty)`);
+    return cached.reports;
+  }
+  return []; // truly no data
+}
+
 // ── Module-level escalation cache (live window only) ─────────────────────────
 interface EscCacheEntry {
   byDate: Map<string, { human: number; humanResolved: number }>;
@@ -287,7 +325,7 @@ export async function GET(req: NextRequest) {
     const [allDailyReports, allHourlyReports] = await Promise.all([
       Promise.all(
         channelDefs.map((ch) =>
-          fetchDailyConversationCounts(config.accountId, ch.inboxId).catch(() => [] as { timestamp: number; value: number }[])
+          fetchDailyWithCache(config.accountId, ch.inboxId)
         )
       ),
       Promise.all(
