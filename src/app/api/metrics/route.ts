@@ -102,7 +102,8 @@ function subtractTestFromEscMap(
   const result = new Map(escMap);
   for (const [date, testCounts] of Object.entries(testByDate)) {
     if (!testCounts.escalated) continue;
-    const existing = result.get(date) ?? { human: 0, humanResolved: 0 };
+    const existing = result.get(date);
+    if (!existing) continue; // don't create phantom entries for dates outside the live window
     result.set(date, {
       human: Math.max(0, existing.human - testCounts.escalated),
       humanResolved: existing.humanResolved,
