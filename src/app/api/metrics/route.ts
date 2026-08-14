@@ -13,6 +13,7 @@ import {
 import type { DailyData } from "@/lib/types";
 import clientsConfig from "@/config/clients.json";
 import baseline from "@/data/baseline.json";
+import testExclusions from "@/data/test-exclusions.json";
 
 // ── Live window: only fetch this many days from Chatwoot on each request ────
 // Historical data (older than LIVE_WINDOW_DAYS) comes from the static baseline.
@@ -29,6 +30,68 @@ const ESC_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function escKey(accountId: number, inboxId: number, labels: string[]): string {
   return `${accountId}:${inboxId}:${[...labels].sort().join(",")}`;
+}
+
+// ── Test conversation exclusion ────────────────────────────────────────────────
+// Returns pre-computed test conversation offsets (total + escalated) per date for an inbox.
+function getTestByDate(
+  accountId: number,
+  inboxId: number
+): Record<string, { total: number; escalated: number }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const accounts = (testExclusions as any).accounts ?? {};
+  return (accounts[String(accountId)] ?? {})[String(inboxId)] ?? {};
+}
+
+// Subtract test conversation totals from V2 daily reports before building DailyData.
+function subtractTestFromDaily(
+  dailyReports: { timestamp: number; value: number }[],
+  testByDate: Record<string, { total: number; escalated: number }>
+): { timestamp: number; value: number }[] {
+  if (Object.keys(testByDate).length === 0) return dailyReports;
+  return dailyReports.map((row) => {
+    const date = toDateStr(row.timestamp);
+    const offset = testByDate[date]?.total ?? 0;
+    return offset > 0 ? { ...row, value: Math.max(0, row.value - offset) } : row;
+  });
+}
+
+// Subtract test escalated counts from a live escalation Map (last 30 days).
+function subtractTestFromEscMap(
+  escMap: Map<string, { human: number; humanResolved: number }>,
+  testByDate: Record<string, { total: number; escalated: number }>
+): Map<string, { human: number; humanResolved: number }> {
+  if (Object.keys(testByDate).length === 0) return escMap;
+  const result = new Map(escMap);
+  for (const [date, testCounts] of Object.entries(testByDate)) {
+    if (!testCounts.escalated) continue;
+    const existing = result.get(date) ?? { human: 0, humanResolved: 0 };
+    result.set(date, {
+      human: Math.max(0, existing.human - testCounts.escalated),
+      humanResolved: existing.humanResolved,
+    });
+  }
+  return result;
+}
+
+// Subtract test escalated counts from a baseline map (historical dates).
+function subtractTestFromBaseline(
+  baselineMap: Record<string, { human: number; humanResolved: number }>,
+  testByDate: Record<string, { total: number; escalated: number }>
+): Record<string, { human: number; humanResolved: number }> {
+  if (Object.keys(testByDate).length === 0) return baselineMap;
+  const result: Record<string, { human: number; humanResolved: number }> = { ...baselineMap };
+  for (const [date, testCounts] of Object.entries(testByDate)) {
+    if (!testCounts.escalated) continue;
+    const existing = result[date];
+    if (existing) {
+      result[date] = {
+        human: Math.max(0, existing.human - testCounts.escalated),
+        humanResolved: existing.humanResolved,
+      };
+    }
+  }
+  return result;
 }
 
 // liveSince: only count conversations created on or after this timestamp.
@@ -108,10 +171,12 @@ function startOfMonthStr(dateStr: string): string {
 
 // Fetch exact totals for each preset using the V2 summary API (IST boundaries).
 // Presets run sequentially to avoid Chatwoot rate limits; inboxes run in parallel within each preset.
+// testByDatePerInbox: pre-computed test conversation offsets per inbox (to subtract from raw totals).
 async function fetchSummaryTotals(
   accountId: number,
   inboxIds: number[],
-  presets: Record<string, { from: string; to: string }>
+  presets: Record<string, { from: string; to: string }>,
+  testByDatePerInbox: Record<string, { total: number; escalated: number }>[]
 ): Promise<Record<string, number>> {
   const summaryTotals: Record<string, number> = {};
   for (const [preset, { from, to }] of Object.entries(presets)) {
@@ -124,7 +189,15 @@ async function fetchSummaryTotals(
           .catch(() => 0)
       )
     );
-    summaryTotals[preset] = counts.reduce((s, n) => s + n, 0);
+    const rawTotal = counts.reduce((s, n) => s + n, 0);
+    // Subtract test conversations that fall within [from, to]
+    const testOffset = inboxIds.reduce((s, _id, i) => {
+      const testByDate = testByDatePerInbox[i] ?? {};
+      return s + Object.entries(testByDate)
+        .filter(([date]) => date >= from && date <= to)
+        .reduce((acc, [, v]) => acc + v.total, 0);
+    }, 0);
+    summaryTotals[preset] = Math.max(0, rawTotal - testOffset);
   }
   return summaryTotals;
 }
@@ -258,21 +331,35 @@ export async function GET(req: NextRequest) {
       ),
     ]);
 
+    // ── Test exclusion data per channel ────────────────────────────────────
+    const channelTestData = channelDefs.map((ch) =>
+      getTestByDate(config.accountId, ch.inboxId)
+    );
+
+    // ── Apply test exclusions to V2 daily reports ───────────────────────────
+    const adjustedDailyReports = allDailyReports.map((reports, i) =>
+      subtractTestFromDaily(reports, channelTestData[i])
+    );
+
     // ── Live escalation from cache (last 30 days only) ──────────────────────
-    const channelLiveEsc = channelDefs.map((ch) =>
+    const channelLiveEscRaw = channelDefs.map((ch) =>
       getEscalation(config.accountId, ch.inboxId, config.escalationLabels)
+    );
+    const channelLiveEsc = channelLiveEscRaw.map((escMap, i) =>
+      subtractTestFromEscMap(escMap, channelTestData[i])
     );
 
     // ── Baseline historical data for each channel ───────────────────────────
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const baselineAccounts = (baseline as any).accounts ?? {};
-    const channelBaseline = channelDefs.map((ch) =>
-      (baselineAccounts[String(config.accountId)] ?? {})[String(ch.inboxId)] ?? {}
-    );
+    const channelBaseline = channelDefs.map((ch, i) => {
+      const raw = (baselineAccounts[String(config.accountId)] ?? {})[String(ch.inboxId)] ?? {};
+      return subtractTestFromBaseline(raw, channelTestData[i]);
+    });
 
     // ── Build per-channel DailyData[] (live + baseline merged) ─────────────
     const channelDailyArrays = channelDefs.map((_, i) =>
-      buildDailyData(allDailyReports[i], channelLiveEsc[i], channelBaseline[i])
+      buildDailyData(adjustedDailyReports[i], channelLiveEsc[i], channelBaseline[i])
     );
 
     // ── Aggregate all channels ──────────────────────────────────────────────
@@ -309,7 +396,7 @@ export async function GET(req: NextRequest) {
       "last-30":    { from: addDaysStr(todayIST, -29),   to: todayIST },
       "last-7":     { from: addDaysStr(todayIST, -6),    to: todayIST },
     };
-    const summaryTotals = await fetchSummaryTotals(config.accountId, inboxIds, presets);
+    const summaryTotals = await fetchSummaryTotals(config.accountId, inboxIds, presets, channelTestData);
 
     return NextResponse.json({
       dailyData,
