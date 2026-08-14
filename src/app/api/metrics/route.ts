@@ -218,18 +218,36 @@ function dateLabel(dateStr: string): string {
 }
 
 // Build DailyData[] for one inbox.
-// liveByDate  = live-fetched escalations (last 30 days, from cache)
-// baselineMap = pre-computed historical escalations (from baseline.json, older than 30 days)
-// For each date: live takes priority; baseline fills older dates.
+// istOverrides = IST-aligned daily totals + UTC reductions built from hourly data
+// liveByDate   = live-fetched escalations (last 30 days, from cache)
+// baselineMap  = pre-computed historical escalations (from baseline.json, older than 30 days)
+// For each date: live takes priority over baseline for human counts; IST overrides UTC daily for totals.
 function buildDailyData(
   dailyReports: { timestamp: number; value: number }[],
+  istOverrides: { istDaily: Map<string, number>; utcReductions: Map<string, number> },
   liveByDate: Map<string, { human: number; humanResolved: number }>,
   baselineMap: Record<string, { human: number; humanResolved: number }>
 ): DailyData[] {
   const totalByDate = new Map<string, number>();
+  // Step 1: historical totals from V2 daily reports (UTC-bucketed)
   for (const row of dailyReports) {
     if (row.value > 0) totalByDate.set(toDateStr(row.timestamp), row.value);
   }
+  // Step 2a: subtract the evening-crossing portion from V2 UTC daily entries to prevent
+  // double-counting when IST daily (step 2b) adds those same conversations to the next IST date.
+  istOverrides.utcReductions.forEach((reduction, utcDate) => {
+    const existing = totalByDate.get(utcDate);
+    if (existing !== undefined) {
+      const adjusted = existing - reduction;
+      if (adjusted > 0) totalByDate.set(utcDate, adjusted);
+      else totalByDate.delete(utcDate);
+    }
+  });
+  // Step 2b: override with IST-aligned hourly sums (complete replacement for covered dates).
+  istOverrides.istDaily.forEach((count, date) => {
+    if (count > 0) totalByDate.set(date, count);
+    else totalByDate.delete(date);
+  });
 
   // Only include dates that have V2 total data OR live escalation data.
   // Baseline fills human counts for those dates but never adds baseline-only rows
@@ -306,6 +324,55 @@ function buildHeatmap(hourlyReports: { timestamp: number; value: number }[]): nu
   return matrix;
 }
 
+// Build IST-aligned daily totals from hourly V2 data.
+//
+// Each hourly bucket has a UTC timestamp. Adding the IST offset before extracting the date
+// re-attributes the bucket to the correct IST calendar day.
+//
+// Buckets in the 19:00–23:00 UTC window straddle IST midnight: their UTC date is D but their
+// IST date is D+1. If we add IST daily counts on top of V2 UTC daily counts, those buckets
+// would be counted twice (once in V2 daily D and once in IST daily D+1). To prevent that,
+// we also return `utcReductions`: the amount to subtract from each V2 UTC daily entry for
+// the buckets that were re-attributed to the next IST date.
+function buildISTDailyFromHourly(hourlyReports: { timestamp: number; value: number }[]): {
+  istDaily: Map<string, number>;
+  utcReductions: Map<string, number>;
+} {
+  const IST_OFFSET_S = 19800; // 5.5 * 3600
+  const istDaily = new Map<string, number>();
+  const utcReductions = new Map<string, number>();
+  for (const row of hourlyReports) {
+    if (row.value === 0) continue;
+    const utcDate = toDateStr(row.timestamp);
+    const istDate = toDateStr(row.timestamp + IST_OFFSET_S);
+    istDaily.set(istDate, (istDaily.get(istDate) ?? 0) + row.value);
+    if (utcDate !== istDate) {
+      // This bucket crossed IST midnight: it's in V2 daily for utcDate but IST daily for istDate.
+      // Record how much needs to be removed from the V2 daily entry for utcDate.
+      utcReductions.set(utcDate, (utcReductions.get(utcDate) ?? 0) + row.value);
+    }
+  }
+  return { istDaily, utcReductions };
+}
+
+// Subtract test conversation totals from an IST-aligned daily Map.
+function subtractTestFromISTDaily(
+  istDaily: Map<string, number>,
+  testByDate: Record<string, { total: number; escalated: number }>
+): Map<string, number> {
+  if (Object.keys(testByDate).length === 0) return istDaily;
+  const result = new Map(istDaily);
+  for (const [date, testCounts] of Object.entries(testByDate)) {
+    if (!testCounts.total) continue;
+    const existing = result.get(date);
+    if (existing === undefined) continue;
+    const adjusted = Math.max(0, existing - testCounts.total);
+    if (adjusted > 0) result.set(date, adjusted);
+    else result.delete(date);
+  }
+  return result;
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const clientId = req.nextUrl.searchParams.get("clientId");
@@ -362,9 +429,15 @@ export async function GET(req: NextRequest) {
       return subtractTestFromBaseline(raw, channelTestData[i]);
     });
 
+    // ── IST-aligned daily totals from hourly data (eliminates UTC/IST boundary error) ──
+    const channelISTOverrides = allHourlyReports.map((hourly, i) => {
+      const { istDaily, utcReductions } = buildISTDailyFromHourly(hourly);
+      return { istDaily: subtractTestFromISTDaily(istDaily, channelTestData[i]), utcReductions };
+    });
+
     // ── Build per-channel DailyData[] (live + baseline merged) ─────────────
     const channelDailyArrays = channelDefs.map((_, i) =>
-      buildDailyData(adjustedDailyReports[i], channelLiveEsc[i], channelBaseline[i])
+      buildDailyData(adjustedDailyReports[i], channelISTOverrides[i], channelLiveEsc[i], channelBaseline[i])
     );
 
     // ── Aggregate all channels ──────────────────────────────────────────────
