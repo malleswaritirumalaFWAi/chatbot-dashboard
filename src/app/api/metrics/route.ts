@@ -7,7 +7,6 @@ import {
   fetchDailyConversationCounts,
   fetchEscalatedConversations,
   fetchHourlyConversationCounts,
-  fetchInboxSummary,
   type CWConversation,
 } from "@/lib/chatwoot";
 import type { DailyData } from "@/lib/types";
@@ -140,22 +139,7 @@ function getEscalation(
   return new Map();
 }
 
-// ── IST boundary helpers ──────────────────────────────────────────────────────
-// Chatwoot's reports UI sends IST midnight as since/until for date range filters.
-// IST = UTC+5:30, so IST midnight 00:00 = UTC midnight of that date minus 5.5 hours.
-// Example: Aug 8 00:00 IST = Aug 7 18:30:00 UTC = unix 1786107600
-
-function istMidnightUnix(dateStr: string): number {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return Math.floor((Date.UTC(y, m - 1, d, 0, 0, 0) - 5.5 * 3600 * 1000) / 1000);
-}
-
-function istEndOfDayUnix(dateStr: string): number {
-  // End of IST day = IST midnight of the next day minus 1 second
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return Math.floor((Date.UTC(y, m - 1, d + 1, 0, 0, 0) - 5.5 * 3600 * 1000) / 1000) - 1;
-}
-
+// ── Date helpers ──────────────────────────────────────────────────────────────
 function getTodayIST(): string {
   return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().split("T")[0];
 }
@@ -169,41 +153,19 @@ function startOfMonthStr(dateStr: string): string {
   return dateStr.substring(0, 7) + "-01";
 }
 
-// Fetch exact totals for each preset using the V2 summary API (IST boundaries).
-// Presets run sequentially to avoid Chatwoot rate limits; inboxes run in parallel within each preset.
-// testByDatePerInbox: pre-computed test conversation offsets per inbox (to subtract from raw totals).
-async function fetchSummaryTotals(
-  accountId: number,
-  inboxIds: number[],
-  presets: Record<string, { from: string; to: string }>,
-  testByDatePerInbox: Record<string, { total: number; escalated: number }>[]
-): Promise<Record<string, number>> {
-  const summaryTotals: Record<string, number> = {};
-  let first = true;
+// Compute preset totals directly from dailyData (test exclusions already applied).
+// Avoids extra Chatwoot API calls and is immune to rate limiting.
+function computeSummaryTotals(
+  dailyData: DailyData[],
+  presets: Record<string, { from: string; to: string }>
+): Record<string, number> {
+  const totals: Record<string, number> = {};
   for (const [preset, { from, to }] of Object.entries(presets)) {
-    // Small delay between presets to avoid Chatwoot rate limiting
-    if (!first) await new Promise((r) => setTimeout(r, 400));
-    first = false;
-    const since = istMidnightUnix(from);
-    const until = istEndOfDayUnix(to);
-    const counts = await Promise.all(
-      inboxIds.map((id) =>
-        fetchInboxSummary(accountId, id, since, until)
-          .then((r) => r.conversations_count ?? 0)
-          .catch(() => 0)
-      )
-    );
-    const rawTotal = counts.reduce((s, n) => s + n, 0);
-    // Subtract test conversations that fall within [from, to]
-    const testOffset = inboxIds.reduce((s, _id, i) => {
-      const testByDate = testByDatePerInbox[i] ?? {};
-      return s + Object.entries(testByDate)
-        .filter(([date]) => date >= from && date <= to)
-        .reduce((acc, [, v]) => acc + v.total, 0);
-    }, 0);
-    summaryTotals[preset] = Math.max(0, rawTotal - testOffset);
+    totals[preset] = dailyData
+      .filter((d) => d.date >= from && d.date <= to)
+      .reduce((s, d) => s + d.total, 0);
   }
-  return summaryTotals;
+  return totals;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -390,17 +352,16 @@ export async function GET(req: NextRequest) {
       return c && c !== "loading";
     });
 
-    // ── Summary totals using IST boundaries (matches Chatwoot's reports UI) ────
+    // ── Summary totals computed from dailyData (test exclusions already applied) ─
     const todayIST = getTodayIST();
     const dataStart = dailyData[0]?.date ?? todayIST;
-    const inboxIds = channelDefs.map((ch) => ch.inboxId);
     const presets = {
       "all-time":   { from: dataStart,                   to: todayIST },
       "this-month": { from: startOfMonthStr(todayIST),   to: todayIST },
       "last-30":    { from: addDaysStr(todayIST, -29),   to: todayIST },
       "last-7":     { from: addDaysStr(todayIST, -6),    to: todayIST },
     };
-    const summaryTotals = await fetchSummaryTotals(config.accountId, inboxIds, presets, channelTestData);
+    const summaryTotals = computeSummaryTotals(dailyData, presets);
 
     return NextResponse.json({
       dailyData,
