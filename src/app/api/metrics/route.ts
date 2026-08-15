@@ -152,7 +152,8 @@ function buildByDate(convs: CWConversation[], liveSince: number): Map<string, { 
 function getEscalation(
   accountId: number,
   inboxId: number,
-  labels: string[]
+  labels: string[],
+  botAgentId?: number
 ): Map<string, { human: number; humanResolved: number }> {
   const key = escKey(accountId, inboxId, labels);
   const cached = escCache.get(key);
@@ -167,7 +168,7 @@ function getEscalation(
   escCache.set(key, "loading");
   waitUntil((async () => {
     try {
-      const convs = await fetchEscalatedConversations(accountId, inboxId, labels, liveSince);
+      const convs = await fetchEscalatedConversations(accountId, inboxId, labels, liveSince, botAgentId);
       escCache.set(key, { byDate: buildByDate(convs, liveSince), fetchedAt: Date.now() });
       console.log(`[cache] warmed ${key} (${convs.length} convos, last ${LIVE_WINDOW_DAYS}d)`);
     } catch {
@@ -415,7 +416,7 @@ export async function GET(req: NextRequest) {
 
     // ── Live escalation from cache (last 30 days only) ──────────────────────
     const channelLiveEscRaw = channelDefs.map((ch) =>
-      getEscalation(config.accountId, ch.inboxId, config.escalationLabels)
+      getEscalation(config.accountId, ch.inboxId, config.escalationLabels, config.botAgentId)
     );
     const channelLiveEsc = channelLiveEscRaw.map((escMap, i) =>
       subtractTestFromEscMap(escMap, channelTestData[i])

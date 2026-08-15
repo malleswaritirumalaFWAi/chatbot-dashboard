@@ -49,6 +49,9 @@ export interface CWConversation {
   status: "open" | "resolved" | "pending" | "snoozed";
   created_at: number;
   labels: string[];
+  meta?: {
+    assignee?: { id: number; name: string };
+  };
 }
 
 const PAGE_BATCH = 4;
@@ -122,27 +125,35 @@ async function fetchAssignedConversations(
 // Fetches human-handled conversations within the given time window (since = Unix timestamp).
 // Union of assignee-based + label-based detection.
 // Labels are fetched SEQUENTIALLY to avoid Chatwoot rate limiting.
+// botAgentId: conversations assigned to this agent are bot-handled and excluded from human count.
 export async function fetchEscalatedConversations(
   accountId: number,
   inboxId: number,
   escalationLabels: string[],
-  since: number
+  since: number,
+  botAgentId?: number
 ): Promise<CWConversation[]> {
   const seen = new Map<number, CWConversation>();
 
-  // 1. Assignee-based: conversations assigned to a human agent within the window
+  // 1. Assignee-based: conversations assigned to a human agent (not the bot) within the window
   try {
     const assignedConvs = await fetchAssignedConversations(accountId, inboxId, since);
-    for (const conv of assignedConvs) seen.set(conv.id, conv);
+    for (const conv of assignedConvs) {
+      if (botAgentId && conv.meta?.assignee?.id === botAgentId) continue; // bot-handled, skip
+      seen.set(conv.id, conv);
+    }
   } catch {
     // fall back to label-only if assignee fetch fails
   }
 
-  // 2. Label-based: catches escalations in queue (labeled but not yet assigned)
+  // 2. Label-based: catches escalations in queue (labeled but not yet assigned to a human)
+  // Also apply bot-agent filter here: if the bot added the label itself and still owns the
+  // conversation, it should not count as human — only label + non-bot assignee (or unassigned) counts.
   for (const label of escalationLabels) {
     try {
       const convs = await fetchConversationsByLabel(accountId, inboxId, label, since);
       for (const conv of convs) {
+        if (botAgentId && conv.meta?.assignee?.id === botAgentId) continue; // bot owns it, skip
         if (!seen.has(conv.id)) seen.set(conv.id, conv);
       }
     } catch {
