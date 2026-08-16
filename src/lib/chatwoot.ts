@@ -46,11 +46,13 @@ export async function fetchHourlyConversationCounts(
 // ── V1 Conversations API ────────────────────────────────────────────────────
 export interface CWConversation {
   id: number;
+  inbox_id?: number;
   status: "open" | "resolved" | "pending" | "snoozed";
   created_at: number;
   labels: string[];
   meta?: {
     assignee?: { id: number; name: string };
+    sender?: { id: number; name: string };
   };
 }
 
@@ -126,20 +128,27 @@ async function fetchAssignedConversations(
 // Union of assignee-based + label-based detection.
 // Labels are fetched SEQUENTIALLY to avoid Chatwoot rate limiting.
 // botAgentId: conversations assigned to this agent are bot-handled and excluded from human count.
+// excludedContactIds: conversations initiated by these contacts (testers/staff) are excluded.
 export async function fetchEscalatedConversations(
   accountId: number,
   inboxId: number,
   escalationLabels: string[],
   since: number,
-  botAgentId?: number
+  botAgentId?: number,
+  excludedContactIds?: number[]
 ): Promise<CWConversation[]> {
   const seen = new Map<number, CWConversation>();
+  const isTester = (conv: CWConversation) =>
+    !!excludedContactIds?.length &&
+    conv.meta?.sender?.id !== undefined &&
+    excludedContactIds.includes(conv.meta.sender.id);
 
   // 1. Assignee-based: conversations assigned to a human agent (not the bot) within the window
   try {
     const assignedConvs = await fetchAssignedConversations(accountId, inboxId, since);
     for (const conv of assignedConvs) {
       if (botAgentId && conv.meta?.assignee?.id === botAgentId) continue; // bot-handled, skip
+      if (isTester(conv)) continue; // tester contact, skip
       seen.set(conv.id, conv);
     }
   } catch {
@@ -154,6 +163,7 @@ export async function fetchEscalatedConversations(
       const convs = await fetchConversationsByLabel(accountId, inboxId, label, since);
       for (const conv of convs) {
         if (botAgentId && conv.meta?.assignee?.id === botAgentId) continue; // bot owns it, skip
+        if (isTester(conv)) continue; // tester contact, skip
         if (!seen.has(conv.id)) seen.set(conv.id, conv);
       }
     } catch {
@@ -162,6 +172,37 @@ export async function fetchEscalatedConversations(
   }
 
   return Array.from(seen.values());
+}
+
+// Fetches all conversations for given tester contact IDs in a specific inbox since a timestamp.
+// Used to compute how many tester conversations exist per date so they can be subtracted from totals.
+export async function fetchTesterConversations(
+  accountId: number,
+  contactIds: number[],
+  inboxId: number,
+  since: number
+): Promise<CWConversation[]> {
+  if (!contactIds.length) return [];
+  const allConvs: CWConversation[] = [];
+  for (const contactId of contactIds) {
+    try {
+      const data = await chatwootFetch(
+        `/api/v1/accounts/${accountId}/contacts/${contactId}/conversations`
+      );
+      const raw = data?.payload;
+      const convs: CWConversation[] = Array.isArray(raw)
+        ? raw
+        : (raw?.data?.payload ?? []);
+      for (const conv of convs) {
+        if (conv.inbox_id === inboxId && conv.created_at >= since) {
+          allConvs.push(conv);
+        }
+      }
+    } catch {
+      // contact has no conversations in this account — skip
+    }
+  }
+  return allConvs;
 }
 
 // ── V2 Summary API ──────────────────────────────────────────────────────────

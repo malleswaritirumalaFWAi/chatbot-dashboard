@@ -7,12 +7,14 @@ import {
   fetchDailyConversationCounts,
   fetchEscalatedConversations,
   fetchHourlyConversationCounts,
+  fetchTesterConversations,
   type CWConversation,
 } from "@/lib/chatwoot";
 import type { DailyData } from "@/lib/types";
 import clientsConfig from "@/config/clients.json";
 import baseline from "@/data/baseline.json";
 import testExclusions from "@/data/test-exclusions.json";
+import excludedContactsConfig from "@/data/excluded-contacts.json";
 
 // ── Live window: only fetch this many days from Chatwoot on each request ────
 // Historical data (older than LIVE_WINDOW_DAYS) comes from the static baseline.
@@ -67,6 +69,87 @@ const ESC_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function escKey(accountId: number, inboxId: number, labels: string[]): string {
   return `${accountId}:${inboxId}:${[...labels].sort().join(",")}`;
+}
+
+// ── Module-level tester conversation cache ────────────────────────────────────
+// Stores per-date tester conversation counts per inbox for total subtraction.
+interface TesterCacheEntry {
+  byDate: Map<string, number>; // IST date → number of tester conversations
+  fetchedAt: number;
+}
+const testerCache = new Map<string, TesterCacheEntry | "loading">();
+const TESTER_TTL_MS = 60 * 60 * 1000; // 1 hour — tester counts change rarely
+const HISTORICAL_SINCE = 1735689600; // Jan 1, 2025 — matches V2 daily report range
+
+function testerKey(accountId: number, inboxId: number): string {
+  return `${accountId}:${inboxId}`;
+}
+
+function getExcludedContactIds(accountId: number): number[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (excludedContactsConfig as any).accounts?.[String(accountId)] ?? [];
+}
+
+function getTesterConvsByDate(
+  accountId: number,
+  inboxId: number,
+  contactIds: number[]
+): Map<string, number> {
+  if (!contactIds.length) return new Map();
+  const key = testerKey(accountId, inboxId);
+  const cached = testerCache.get(key);
+
+  if (cached && cached !== "loading" && Date.now() - cached.fetchedAt < TESTER_TTL_MS) {
+    return cached.byDate;
+  }
+  if (cached === "loading") return new Map();
+
+  const IST_OFFSET_S = 19800;
+  testerCache.set(key, "loading");
+  waitUntil((async () => {
+    try {
+      const convs = await fetchTesterConversations(accountId, contactIds, inboxId, HISTORICAL_SINCE);
+      const byDate = new Map<string, number>();
+      for (const conv of convs) {
+        const date = toDateStr(conv.created_at + IST_OFFSET_S);
+        byDate.set(date, (byDate.get(date) ?? 0) + 1);
+      }
+      testerCache.set(key, { byDate, fetchedAt: Date.now() });
+      console.log(`[tester-cache] warmed ${key} (${convs.length} tester convos)`);
+    } catch {
+      testerCache.delete(key);
+    }
+  })());
+
+  return new Map();
+}
+
+function subtractTesterFromDaily(
+  dailyReports: { timestamp: number; value: number }[],
+  testerByDate: Map<string, number>
+): { timestamp: number; value: number }[] {
+  if (!testerByDate.size) return dailyReports;
+  return dailyReports.map((row) => {
+    const date = toDateStr(row.timestamp); // V2 daily timestamps are midnight UTC = same IST date
+    const offset = testerByDate.get(date) ?? 0;
+    return offset > 0 ? { ...row, value: Math.max(0, row.value - offset) } : row;
+  });
+}
+
+function subtractTesterFromISTDaily(
+  istDaily: Map<string, number>,
+  testerByDate: Map<string, number>
+): Map<string, number> {
+  if (!testerByDate.size) return istDaily;
+  const result = new Map(istDaily);
+  for (const [date, count] of Array.from(testerByDate.entries())) {
+    const existing = result.get(date);
+    if (existing === undefined) continue;
+    const adjusted = Math.max(0, existing - count);
+    if (adjusted > 0) result.set(date, adjusted);
+    else result.delete(date);
+  }
+  return result;
 }
 
 // ── Test conversation exclusion ────────────────────────────────────────────────
@@ -153,7 +236,8 @@ function getEscalation(
   accountId: number,
   inboxId: number,
   labels: string[],
-  botAgentId?: number
+  botAgentId?: number,
+  excludedContactIds?: number[]
 ): Map<string, { human: number; humanResolved: number }> {
   const key = escKey(accountId, inboxId, labels);
   const cached = escCache.get(key);
@@ -168,7 +252,7 @@ function getEscalation(
   escCache.set(key, "loading");
   waitUntil((async () => {
     try {
-      const convs = await fetchEscalatedConversations(accountId, inboxId, labels, liveSince, botAgentId);
+      const convs = await fetchEscalatedConversations(accountId, inboxId, labels, liveSince, botAgentId, excludedContactIds);
       escCache.set(key, { byDate: buildByDate(convs, liveSince), fetchedAt: Date.now() });
       console.log(`[cache] warmed ${key} (${convs.length} convos, last ${LIVE_WINDOW_DAYS}d)`);
     } catch {
@@ -409,14 +493,21 @@ export async function GET(req: NextRequest) {
       getTestByDate(config.accountId, ch.inboxId)
     );
 
-    // ── Apply test exclusions to V2 daily reports ───────────────────────────
-    const adjustedDailyReports = allDailyReports.map((reports, i) =>
-      subtractTestFromDaily(reports, channelTestData[i])
+    // ── Tester contact exclusion ────────────────────────────────────────────
+    const excludedContactIds = getExcludedContactIds(config.accountId);
+    const channelTesterByDate = channelDefs.map((ch) =>
+      getTesterConvsByDate(config.accountId, ch.inboxId, excludedContactIds)
     );
+
+    // ── Apply test + tester exclusions to V2 daily reports ─────────────────
+    const adjustedDailyReports = allDailyReports.map((reports, i) => {
+      const afterTest = subtractTestFromDaily(reports, channelTestData[i]);
+      return subtractTesterFromDaily(afterTest, channelTesterByDate[i]);
+    });
 
     // ── Live escalation from cache (last 30 days only) ──────────────────────
     const channelLiveEscRaw = channelDefs.map((ch) =>
-      getEscalation(config.accountId, ch.inboxId, config.escalationLabels, config.botAgentId)
+      getEscalation(config.accountId, ch.inboxId, config.escalationLabels, config.botAgentId, excludedContactIds)
     );
     const channelLiveEsc = channelLiveEscRaw.map((escMap, i) =>
       subtractTestFromEscMap(escMap, channelTestData[i])
@@ -433,7 +524,8 @@ export async function GET(req: NextRequest) {
     // ── IST-aligned daily totals from hourly data (eliminates UTC/IST boundary error) ──
     const channelISTOverrides = allHourlyReports.map((hourly, i) => {
       const { istDaily, utcReductions } = buildISTDailyFromHourly(hourly);
-      return { istDaily: subtractTestFromISTDaily(istDaily, channelTestData[i]), utcReductions };
+      const afterTest = subtractTestFromISTDaily(istDaily, channelTestData[i]);
+      return { istDaily: subtractTesterFromISTDaily(afterTest, channelTesterByDate[i]), utcReductions };
     });
 
     // ── Build per-channel DailyData[] (live + baseline merged) ─────────────
