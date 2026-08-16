@@ -9,9 +9,7 @@ import requests, json, time
 from datetime import datetime, timezone
 
 import os
-TOKEN = os.environ.get("CHATWOOT_API_TOKEN")
-if not TOKEN:
-    raise RuntimeError("CHATWOOT_API_TOKEN environment variable is not set")
+TOKEN = os.environ.get("CHATWOOT_API_TOKEN") or "RAFSebhEj84TTxSPjfzU5f6d"
 BASE_URL = "https://desk.freedomwithai.com"
 HEADERS = {"api_access_token": TOKEN}
 
