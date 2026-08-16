@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import requests, json, time
+import os, requests, json, time
 from datetime import datetime, timezone
 
-TOKEN = "RAFSebhEj84TTxSPjfzU5f6d"
+TOKEN = os.environ.get("CHATWOOT_API_TOKEN")
+if not TOKEN:
+    raise RuntimeError("CHATWOOT_API_TOKEN environment variable is not set")
 BASE  = "https://desk.freedomwithai.com"
 HDR   = {"api_access_token": TOKEN}
 SINCE = 1744243200   # Apr 2026
